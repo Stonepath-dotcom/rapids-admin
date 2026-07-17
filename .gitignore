@@ -1,26 +1,5 @@
-# Dependencies
 node_modules/
-
-# Environment variables (SENSITIVE - do not commit!)
-.env
-
-# WhatsApp session data
-session/
-
-# Logs
+auth_info_baileys_folder/
 *.log
-npm-debug.log*
-
-# OS files
 .DS_Store
-Thumbs.db
-
-# IDE
-.idea/
-.vscode/
-*.swp
-*.swo
-
-# Temporary files
-tmp/
-temp/
+.env

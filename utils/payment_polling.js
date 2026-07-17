@@ -1,224 +1,204 @@
-const cashiHelper = require("./cashi_helper");
-const db = require("../database/db");
+let waSocket = null;
+let pollingInterval = null;
+let pollingStats = {
+    totalChecks: 0,
+    confirmedPayments: 0,
+    lastCheck: null,
+    errors: 0
+};
 
-// Store WA socket reference
-let waSock = null;
 
+// Set WA socket instance for sending notifications
 function setWASocket(sock){
-    waSock = sock;
+    waSocket = sock;
+    
+    // Also set globally for callback access
+    global.waSocket = sock;
+    global.waSendMessage = async function(jid, text){
+        try{
+            await sock.sendMessage(jid, { text: text });
+        } catch(error){
+            console.error("[Polling] WA send error:", error.message);
+        }
+    };
 }
 
-// Track checked orders to avoid re-checking
-const checkedOrders = new Set();
-const MAX_CHECK_ATTEMPTS = 60; // Max 2 hours (60 checks x 2 min)
 
-// Start polling for payment status
+// Start polling for payment confirmation
 function startPolling(intervalMinutes = 2){
+    if(pollingInterval){
+        clearInterval(pollingInterval);
+    }
     
-    console.log(`[POLLING] Payment status checker started (every ${intervalMinutes} min)`);
+    const intervalMs = intervalMinutes * 60 * 1000;
+    
+    console.log(`[Polling] Starting payment check every ${intervalMinutes} minutes...`);
     
     // Run immediately on start
-    checkPendingPayments();
+    checkAllPendingPayments();
     
-    // Then run every interval
-    setInterval(checkPendingPayments, intervalMinutes * 60 * 1000);
+    // Then run on interval
+    pollingInterval = setInterval(checkAllPendingPayments, intervalMs);
 }
 
 
-// Check all pending/waiting payments
-async function checkPendingPayments(){
+// Force check specific participant
+async function forceCheck(pesertaId){
     try{
-        console.log("[POLLING] Checking pending payments...");
+        const db = require("../database/db");
+        const cashiHelper = require("./cashi_helper");
         
-        const allPeserta = db.getAllPeserta();
-        
-        // Find participants with cashi order_id and not yet paid
-        const pendingPayments = allPeserta.all.filter(p => 
-            p.cashi_order_id && 
-            p.status !== "Paid" && 
-            p.status !== "Rejected"
-        );
-        
-        if(pendingPayments.length === 0){
-            console.log("[POLLING] No pending payments to check");
-            return;
+        const peserta = db.getPesertaById(pesertaId);
+        if(!peserta || !peserta.cashi_order_id){
+            return { success: false, message: "Peserta tidak ada atau tidak ada order ID" };
         }
         
-        console.log(`[POLLING] Found ${pendingPayments.length} pending payments`);
+        const status = await cashiHelper.getPaymentStatus(peserta.cashi_order_id);
         
-        for(const peserta of pendingPayments){
-            await checkSinglePayment(peserta);
+        if(status.success && status.status === "paid"){
+            // Update to Paid
+            await confirmPayment(db, peserta);
+            return { success: true, message: "Pembayaran dikonfirmasi!" };
         }
+        
+        return { success: true, message: `Status: ${status.status}` };
         
     } catch(error){
-        console.error("[POLLING] Error checking payments:", error.message);
+        return { success: false, message: error.message };
     }
 }
 
 
-// Check single payment status
-async function checkSinglePayment(peserta){
+// Check all pending payments
+async function checkAllPendingPayments(){
     try{
-        const orderId = peserta.cashi_order_id;
+        const db = require("../database/db");
+        const cashiHelper = require("./cashi_helper");
         
-        // Skip if already checked too many times (order might be expired)
-        const checkKey = `${orderId}_${peserta.id}`;
-        if(checkedOrders.has(checkKey) && checkedOrders.get(checkKey) >= MAX_CHECK_ATTEMPTS){
-            console.log(`[POLLING] Skipping ${orderId} - max attempts reached`);
+        const pending = db.getPendingRegistrations();
+        const pendingWithOrder = pending.filter(p => p.cashi_order_id);
+        
+        if(pendingWithOrder.length === 0){
+            console.log(`[Polling] No pending payments with order ID to check`);
             return;
         }
         
-        // Increment check count
-        const currentCount = checkedOrders.get(checkKey) || 0;
-        checkedOrders.set(checkKey, currentCount + 1);
+        console.log(`[Polling] Checking ${pendingWithOrder.length} pending payments...`);
+        pollingStats.totalChecks++;
+        pollingStats.lastCheck = new Date().toISOString();
         
-        // Query cashi.id API for status
-        const result = await cashiHelper.getPaymentStatus(orderId);
-        
-        if(!result.success){
-            console.log(`[POLLING] Failed to check ${orderId}: ${result.message}`);
-            return;
-        }
-        
-        const paymentData = result.data;
-        console.log(`[POLLING] Order ${orderId} status: ${paymentData.status}`);
-        
-        // Check if payment is settled/confirmed
-        if(paymentData.status === "SETTLED" || paymentData.status === "PAID" || paymentData.status === "SUCCESS"){
-            
-            console.log(`[POLLING] ✅ Payment confirmed! Updating ${peserta.id}`);
-            
-            // Update participant status to Paid
-            const updateResult = db.updateStatus(
-                peserta.id, 
-                "Paid", 
-                `Auto-paid via polling (${orderId})`
-            );
-            
-            if(updateResult.success){
-                // Remove from checked orders
-                checkedOrders.delete(checkKey);
+        for(const peserta of pendingWithOrder){
+            try{
+                const status = await cashiHelper.getPaymentStatus(peserta.cashi_order_id);
                 
-                // Send WhatsApp notification
-                if(waSock){
-                    try{
-                        await waSock.sendMessage(`${peserta.phone}@s.whatsapp.net`, {
-                            text: `💰 PEMBAYARAN TERVERIFIKASI OTOMATIS!
+                if(status.success && status.status === "paid"){
+                    await confirmPayment(db, peserta);
+                    pollingStats.confirmedPayments++;
+                }
+                
+                // Small delay between checks to avoid rate limit
+                await new Promise(resolve => setTimeout(resolve, 1000));
+                
+            } catch(error){
+                console.error(`[Polling] Error checking ${peserta.id}:`, error.message);
+                pollingStats.errors++;
+            }
+        }
+        
+    } catch(error){
+        console.error("[Polling] Error in checkAllPendingPayments:", error.message);
+        pollingStats.errors++;
+    }
+}
 
-━━━━━━━━━━━━━━━
+
+// Confirm payment and update status
+async function confirmPayment(db, peserta){
+    try{
+        const result = db.updateStatus(peserta.id, "Paid");
+        
+        if(result.success){
+            console.log(`[Polling] ✅ Payment confirmed: ${peserta.id}`);
+            
+            // Send WA notification
+            if(waSocket && peserta.phone){
+                const message =
+`💰 *PEMBAYARAN KONFIRMASI OTOMATIS!*
+
+Terima kasih! Pembayaran Anda telah **DITERIMA** ✅
+
+📋 Detail:
 🆔 Kode: ${peserta.id}
 👥 Team: ${peserta.team}
 ⏰ Sesi: ${peserta.session} (${peserta.jam})
-📊 Status: LUNAS ✅
-💳 Via: QRIS cashi.id
-📝 Order ID: ${orderId}
-━━━━━━━━━━━━━━━
+💳 Nominal: Rp 3.100
 
-🎉 Terima kasih! Pembayaran Anda telah dikonfirmasi otomatis.
+Selamat bertanding di turnamen FTSG! 🎮`;
 
-📌 Info Turnamen:
-• Datang 30 menit sebelum sesi dimulai
-• Bawa kartu identitas
-• Pastikan nickname FF sudah benar
-
-Selamat bertanding! 🏆`
-                        });
-                        console.log(`[WA] Auto-payment notification sent to ${peserta.phone}`);
-                    } catch(waError){
-                        console.error(`[WA] Failed to send notification:`, waError.message);
-                    }
+                try{
+                    await waSocket.sendMessage(
+                        `${peserta.phone}@s.whatsapp.net`,
+                        { text: message }
+                    );
+                    console.log(`[Polling] ✓ Notified ${peserta.phone}`);
+                } catch(sendError){
+                    console.error(`[Polling] Failed notify ${peserta.phone}:`, sendError.message);
                 }
-                
-                // Notify admin via Telegram
-                if(global.botInstance && global.OWNER_ID){
-                    try{
-                        await global.botInstance.telegram.sendMessage(
-                            global.OWNER_ID,
-                            `✅ PEMBAYARAN OTOMATIS MASUK!
-
-🆔 Peserta: ${peserta.id}
-👥 Team: ${peserta.team}
-💰 Amount: ${paymentData.amount || "N/A"}
-📝 Order ID: ${orderId}
-🔄 Via: Polling System
-
-Status sudah otomatis LUNAS ✅`
-                        );
-                    } catch(tgError){
-                        console.error("[TG] Failed to notify admin:", tgError.message);
-                    }
-                }
-                
-                console.log(`[POLLING] Successfully updated ${peserta.id} to PAID`);
             }
-        } else if(paymentData.status === "EXPIRED" || paymentData.status === "FAILED" || paymentData.status === "CANCELLED"){
             
-            console.log(`[POLLING] Order ${orderId} expired/failed. Keeping participant as Pending.`);
-            
-            // Remove from checking - order is dead
-            checkedOrders.delete(checkKey);
-            
-            // Optionally notify admin about failed payment
-            if(global.botInstance && global.OWNER_ID){
+            // Send TG notification to admin
+            if(global.botInstance && process.env.OWNER_ID){
                 try{
                     await global.botInstance.telegram.sendMessage(
-                        global.OWNER_ID,
-                        `⚠️ Pembayaran EXPIRED/FAILED
+                        process.env.OWNER_ID,
+`💰 *PEMBAYARAN OTOMATIS TERKONFIRMASI*
 
 🆔 Peserta: ${peserta.id}
 👥 Team: ${peserta.team}
-📝 Order ID: ${orderId}
-❌ Status: ${paymentData.status}
-
-Peserta perlu daftar ulang atau bayar manual.`
+💳 Via: QRIS (cashi.id)
+⏰ Waktu: ${new Date().toLocaleString("id-ID")}`,
+                        { parse_mode: "Markdown" }
                     );
-                } catch(e){
-                    // Ignore error
+                } catch(tgError){
+                    console.error("[Polling] Failed TG notify:", tgError.message);
                 }
             }
-        } else {
-            // Still pending
-            console.log(`[POLLING] Order ${orderId} still pending (${currentCount + 1}/${MAX_CHECK_ATTEMPTS})`);
+            
+            // Generate updated Excel
+            try{
+                const excelHelper = require("./excel_helper");
+                excelHelper.generateAndSendExcel(global.botInstance, process.env.OWNER_ID)
+                    .catch(err => console.error("[Polling] Excel error:", err.message));
+            } catch(excelErr){
+                // Ignore excel errors
+            }
         }
         
     } catch(error){
-        console.error(`[POLLING] Error checking ${peserta.cashi_order_id}:`, error.message);
+        console.error(`[Polling] Error confirming payment for ${peserta.id}:`, error.message);
     }
 }
 
 
-// Manual trigger for testing
-async function forceCheck(pesertaId){
-    const peserta = db.getPesertaById(pesertaId);
-    
-    if(!peserta || !peserta.cashi_order_id){
-        return { success: false, message: "Peserta tidak punya cashi order ID" };
-    }
-    
-    // Reset check count
-    const checkKey = `${peserta.cashi_order_id}_${peserta.id}`;
-    checkedOrders.delete(checkKey);
-    
-    await checkSinglePayment(peserta);
-    
-    return { success: true };
-}
-
-
-// Get polling stats
+// Get polling statistics
 function getPollingStats(){
-    return {
-        trackedOrders: checkedOrders.size,
-        activeOrders: Array.from(checkedOrders.entries()).map(([key, count]) => ({
-            key,
-            checksRemaining: MAX_CHECK_ATTEMPTS - count
-        }))
-    };
+    return { ...pollingStats };
+}
+
+
+// Stop polling
+function stopPolling(){
+    if(pollingInterval){
+        clearInterval(pollingInterval);
+        pollingInterval = null;
+        console.log("[Polling] Stopped");
+    }
 }
 
 
 module.exports = {
     startPolling,
+    stopPolling,
     setWASocket,
     forceCheck,
     getPollingStats

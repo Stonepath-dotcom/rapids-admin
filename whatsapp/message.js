@@ -1,5 +1,4 @@
 const db = require("../database/db");
-const excelHelper = require("../utils/excel_helper");
 const cashiHelper = require("../utils/cashi_helper");
 
 // Store temporary registration data per user
@@ -81,7 +80,6 @@ async function handleMessage(sock){
             const phone = formatPhone(from);
 
             console.log(`[WA] 💬 Message from ${phone}: "${message.substring(0, 50)}${message.length > 50 ? '...' : ''}"`);
-
 
         // Command: HALO / HELLO / MENU
         if(["halo", "hello", "hi", "menu", "start"].includes(message.toLowerCase())){
@@ -223,35 +221,26 @@ Anda sudah mendaftar ${currentCount}/10 kali hari ini.`
 👥 Team: ${peserta.team}
 👤 Nick: ${peserta.kapten}
 ⏰ Sesi: ${peserta.session} (${peserta.jam})
-━━━━━━━━━━━━━━━`
-            );
+━━━━━━━━━━━━━━━
 
-            // Get payment config
-            const dbConfig = db.loadDB().config.pembayaran;
-            const nominal = dbConfig.nominal;
-            const qrisFile = dbConfig.qris_filename;
+💰 *PEMBAYARAN*
 
-            // Send payment instructions with QRIS
-            await sendMessage(sock, from,
-`💰 *PEMBAYARAN*
+Silakan lakukan pembayaran untuk konfirmasi pendaftaran.
 
-${dbConfig.pesan}
-
-💳 *Nominal: Rp ${nominal.toLocaleString("id-ID")}*
-Harap transfer sesuai nominal
+💳 *Nominal QRIS: Rp 3.100*
+💳 *Nominal DANA/SeaBank: Rp 3.000*
 
 ⏳ *Langkah Selanjutnya:*
 1. Scan QRIS di bawah ini (generate otomatis)
-2. Transfer sesuai nominal *Rp ${nominal.toLocaleString("id-ID")}*
+2. Transfer sesuai nominal
 3. Pembayaran akan dikonfirmasi OTOMATIS ✅
 
 Menunggu pembayaran Anda... 🙏`);
 
             // Generate QRIS dynamically via cashi.id
             try {
-                // Use participant ID as order ID for tracking
                 const orderId = `${peserta.id}-${Date.now()}`;
-                const qrisNominal = qrisOpsi?.nominal || 3100;
+                const qrisNominal = 3100; // QRIS nominal
                 
                 console.log(`[WA] Generating QRIS for ${peserta.id} via cashi.id...`);
                 
@@ -267,7 +256,6 @@ Menunggu pembayaran Anda... 🙏`);
                     
                     // Send QRIS image (base64) to WhatsApp
                     if(qrisData.qrisUrl && qrisData.qrisUrl.startsWith("data:image")){
-                        // Extract base64 data
                         const base64Data = qrisData.qrisUrl.split(",")[1] || qrisData.qrisUrl;
                         
                         await sock.sendMessage(from, {
@@ -281,13 +269,12 @@ Menunggu pembayaran Anda... 🙏`);
 ✅ Pembayaran akan dikonfirmasi OTOMATIS setelah Anda transfer!
 
 Atau pakai opsi manual:
-💼 DANA: *${danaOpsi?.nomor}* (Rp ${danaOpsi?.nominal?.toLocaleString("id-ID") || "3.000"})
-🏦 SeaBank: *${seabankOpsi?.nomor}* (Rp ${seabankOpsi?.nominal?.toLocaleString("id-ID") || "3.000"})`
+💼 DANA: *081234567890* (Rp 3.000)
+🏦 SeaBank: *081234567891* (Rp 3.000)`
                         });
                         
                         console.log(`[WA] Dynamic QRIS sent to ${phone}`);
                     } else {
-                        // Fallback: send payment info without image
                         await sendMessage(sock, from,
 `💳 *QRIS Payment*
 
@@ -299,8 +286,8 @@ QRIS sedang diproses...
 Jika tidak menerima gambar QRIS dalam 1 menit, hubungi admin.
 
 Atau transfer manual:
-💼 DANA: *${danaOpsi?.nomor}*
-🏦 SeaBank: *${seabankOpsi?.nomor}*`
+💼 DANA: *081234567890*
+🏦 SeaBank: *081234567891*`
                         );
                     }
                 } else {
@@ -309,12 +296,12 @@ Atau transfer manual:
                     // Fallback to static QRIS or manual payment
                     const fs = require("fs");
                     const path = require("path");
-                    const qrisPath = path.join(__dirname, "../download", qrisFile);
+                    const qrisPath = path.join(__dirname, "../download/qris.jpg");
                     
                     if(fs.existsSync(qrisPath)){
                         await sock.sendMessage(from, {
                             image: { url: qrisPath },
-                            caption: `📱 Scan QRIS di atas\n\nNominal: *Rp ${nominal.toLocaleString("id-ID")}*\n\nSetelah transfer, kirim bukti transfer ya! 📸`
+                            caption: `📱 Scan QRIS di atas\n\nNominal: *Rp 3.100*\n\nSetelah transfer, kirim bukti transfer ya! 📸`
                         });
                     } else {
                         await sendMessage(sock, from,
@@ -323,8 +310,8 @@ Atau transfer manual:
 Maaf, QRIS dinamis sedang gangguan.
 
 Silakan transfer manual:
-💼 DANA: *${danaOpsi?.nomor}* (Rp ${danaOpsi?.nominal?.toLocaleString("id-ID") || "3.000"})
-🏦 SeaBank: *${seabankOpsi?.nomor}* (Rp ${seabankOpsi?.nominal?.toLocaleString("id-ID") || "3.000"})
+💼 DANA: *081234567890* (Rp 3.000)
+🏦 SeaBank: *081234567891* (Rp 3.000)
 
 Kirim bukti transfer ke admin!`
                         );
@@ -338,8 +325,8 @@ Kirim bukti transfer ke admin!`
 
 Silakan coba lagi atau hubungi admin untuk pembayaran manual.
 
-💼 DANA: *${danaOpsi?.nomor}*
-🏦 SeaBank: *${seabankOpsi?.nomor}*`
+💼 DANA: *081234567890*
+🏦 SeaBank: *081234567891*`
                 );
             }
 
@@ -347,15 +334,20 @@ Silakan coba lagi atau hubungi admin untuk pembayaran manual.
 
             // Generate Excel and notify admin (async, don't wait)
             if(global.botInstance){
-                excelHelper.generateAndSendExcel(global.botInstance, process.env.OWNER_ID)
-                    .then(result => {
-                        if(result.success){
-                            console.log("[WA] ✓ Excel sent to Telegram");
-                        }
-                    })
-                    .catch(err => {
-                        console.error("[WA] Error sending Excel:", err.message);
-                    });
+                try {
+                    const excelHelper = require("../utils/excel_helper");
+                    excelHelper.generateAndSendExcel(global.botInstance, process.env.OWNER_ID)
+                        .then(result => {
+                            if(result.success){
+                                console.log("[WA] ✓ Excel sent to Telegram");
+                            }
+                        })
+                        .catch(err => {
+                            console.error("[WA] Error sending Excel:", err.message);
+                        });
+                } catch(excelErr) {
+                    console.error("[WA] Excel module error:", excelErr.message);
+                }
             }
         }
 

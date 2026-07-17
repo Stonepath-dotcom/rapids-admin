@@ -1,188 +1,167 @@
+// Load environment variables
 require("dotenv").config();
 
-const bot = require("./telegram/bot");
-const { callback, setWASocket } = require("./telegram/callback");
 const waConnect = require("./whatsapp/connect");
 const waMessage = require("./whatsapp/message");
-const excelHelper = require("./utils/excel_helper");
-const { startWebhookServer, setWASocket: setWebhookWASocket } = require("./utils/webhook_server");
-const { startPolling, setWASocket: setPollingWASocket } = require("./utils/payment_polling");
+const tgBot = require("./telegram/bot");
+const paymentPolling = require("./utils/payment_polling");
+
+console.log(`
+╔═══════════════════════════════════════╗
+║   🎮 FF TOURNAMENT BOT - RAPIDS      ║
+║   WhatsApp + Telegram + cashi.id QRIS ║
+╚═══════════════════════════════════════╝
+`);
 
 
-// aktifkan tombol telegram
-callback(bot);
+// Validate environment
+if(!process.env.BOT_TOKEN){
+    console.error("❌ ERROR: BOT_TOKEN not set in .env!");
+    console.error("Please create .env file with your bot token.");
+    process.exit(1);
+}
+
+if(!process.env.OWNER_ID){
+    console.error("❌ ERROR: OWNER_ID not set in .env!");
+    console.error("Please create .env file with your owner ID.");
+    process.exit(1);
+}
 
 
-// jalankan bot telegram
-bot.launch()
-.then(() => {
-
-    console.log("✅ Telegram Bot Online");
-    
-    // Set global bot instance for Excel generation
-    global.botInstance = bot;
-
-    // Start webhook server for cashi.id auto-payment (optional)
-    const WEBHOOK_PORT = process.env.WEBHOOK_PORT || 3000;
-    startWebhookServer(WEBHOOK_PORT);
-    console.log(`✅ Webhook Server started on port ${WEBHOOK_PORT}`);
-
-    // Start polling system for auto-payment check (every 2 minutes)
-    const POLLING_INTERVAL = parseInt(process.env.POLLING_INTERVAL) || 2;
-    startPolling(POLLING_INTERVAL);
-    console.log(`✅ Payment Polling started (every ${POLLING_INTERVAL} min)`);
-
-})
-.catch((err)=>{
-
-    console.log("❌ Telegram Error:", err);
-
-});
-
-
-// Inisialisasi WhatsApp
+// Initialize WhatsApp
 async function initWhatsApp(){
-    
     try{
-        console.log("⏳ Memulai koneksi WhatsApp...");
+        console.log("[Init] Starting WhatsApp connection...");
+        const sock = await waConnect.createConnection();
         
-        // Set Telegram bot reference for WA notifications
-        waConnect.setTelegramBot(bot);
+        // Set up message handler
+        await waMessage.handleMessage(sock);
         
-        const sock = await waConnect.connectToWhatsApp();
+        // Set socket for polling notifications
+        paymentPolling.setWASocket(sock);
         
-        // Setup message handler setelah socket siap
-        waMessage.handleMessage(sock);
+        // Set global for callback access
+        global.waSocket = sock;
+        global.waSendMessage = async function(jid, text){
+            await waMessage.sendMessage(sock, jid, text);
+        };
         
-        console.log("✅ WhatsApp Message Handler Aktif");
+        console.log("[Init] ✅ WhatsApp ready");
         
-        // Set socket ke callback untuk notifikasi admin
-        setWASocket(sock);
-        
-        // Set socket ke webhook server untuk auto-payment notification
-        setWebhookWASocket(sock);
-        
-        // Set socket ke polling system untuk auto-payment notification
-        setPollingWASocket(sock);
-        
-        // Setup global handlers for notifications to admin
-        setupGlobalNotifications(sock);
+        return sock;
         
     } catch(error){
-        console.log("❌ WhatsApp Error:", error.message);
+        console.error("[Init] ❌ WhatsApp failed:", error.message);
+        return null;
     }
-
 }
 
 
-// Setup global notification handlers
-function setupGlobalNotifications(sock){
-    
-    // NOTE: Registration data langsung masuk ke database
-    // Tidak ada notifikasi ke Telegram saat daftar (biar gak spam)
-    // Admin bisa lihat data di menu PESERTA / SESI
-    
-    // Handler: Payment proof received - notify Telegram admin with photo
-    global.onPaymentProof = async (pesertaId, buffer, proofData) => {
-        console.log(`[SYSTEM] Payment proof for ${pesertaId}`);
+// Initialize Telegram
+function initTelegram(){
+    try{
+        console.log("[Init] Starting Telegram bot...");
+        const bot = tgBot.initBot(process.env.BOT_TOKEN);
         
-        const peserta = db.getPesertaById(pesertaId);
-        if(!peserta) return;
+        // Set global for other modules
+        global.botInstance = bot;
         
-        try{
-            // Try sending photo first
-            await bot.telegram.sendPhoto(process.env.OWNER_ID, Buffer.from(buffer), {
-                caption:
-`📸 *BUKTI PEMBAYARAN*
-
-━━━━━━━━━━━━━━━
-🆔 Kode: ${peserta.id}
-👥 Team: ${peserta.team}
-👤 Nick: ${peserta.kapten}
-⏰ Sesi: ${peserta.session} (${peserta.jam})
-💰 Nominal: Rp 3.100
-━━━━━━━━━━━━━━━`,
-                parse_mode: "Markdown",
-                ...Markup.inlineKeyboard([
-                    [
-                        Markup.button.callback("✅ Approve", `approve_${pesertaId}`),
-                        Markup.button.callback("❌ Tolak", `reject_${pesertaId}`)
-                    ],
-                    [
-                        Markup.button.callback("💰 Konfirmasi Lunas", `confirm_payment_${pesertaId}`)
-                    ]
-                ])
-            });
-            
-            console.log(`[TG] Payment proof sent for ${peserta.id}`);
-            
-        } catch(photoError){
-            console.error("[TG] Failed to send photo, fallback to text:", photoError.message);
-            
-            // Fallback: send text only
-            try{
-                await bot.telegram.sendMessage(process.env.OWNER_ID,
-`📸 *BUKTI PEMBAYARAN BARU*
-
-━━━━━━━━━━━━━━━
-🆔 Kode: ${peserta.id}
-👥 Team: ${peserta.team}
-👤 Nick: ${peserta.kapten}
-
-(Bukti foto tidak dapat ditampilkan)`,
-                    {
-                        parse_mode: "Markdown",
-                        ...Markup.inlineKeyboard([
-                            [
-                                Markup.button.callback("✅ Approve", `approve_${pesertaId}`),
-                                Markup.button.callback("❌ Tolak", `reject_${pesertaId}`)
-                            ],
-                            [
-                                Markup.button.callback("💰 Konfirmasi Lunas", `confirm_payment_${pesertaId}`)
-                            ]
-                        ])
-                    }
-                );
-                
-            } catch(textError){
-                console.error("[TG] Failed to send text notification:", textError.message);
+        // WA connected notification handler
+        global.onWAConnected = function(){
+            if(bot && process.env.OWNER_ID){
+                bot.telegram.sendMessage(process.env.OWNER_ID, 
+                    "✅ *WhatsApp Bot Connected!*\n\nBot siap menerima pesan.",
+                    { parse_mode: "Markdown" }
+                ).catch(err => console.error("[TG] Notify error:", err.message));
             }
-        }
+        };
         
-        // Also send updated Excel file after payment proof
-        try {
-            await excelHelper.generateAndSendExcel(bot, process.env.OWNER_ID);
-            console.log("[TG] ✓ Updated Excel sent after payment proof");
-        } catch(excelErr) {
-            console.error("[TG] Error sending Excel:", excelErr.message);
-        }
-    };
-    
-    console.log("[SYSTEM] Global notification handlers ready");
+        // Payment proof handler (from WA)
+        global.onPaymentProof = function(pesertaId, buffer, proofData){
+            if(bot && process.env.OWNER_ID){
+                bot.telegram.sendPhoto(
+                    process.env.OWNER_ID,
+                    { source: buffer },
+                    {
+                        caption: `📸 *BUKTI PEMBAYARAN BARU*\n\n🆔 Kode: ${pesertaId}\n⏰ Waktu: ${new Date().toLocaleString("id-ID")}\n\nPilih action:`,
+                        parse_mode: "Markdown"
+                    }
+                ).catch(err => console.error("[TG] Send photo error:", err.message));
+            }
+        };
+        
+        console.log("[Init] ✅ Telegram ready");
+        
+        return bot;
+        
+    } catch(error){
+        console.error("[Init] ❌ Telegram failed:", error.message);
+        return null;
+    }
 }
 
-// Need db for payment proof handler
-const db = require("./database/db");
 
-// Import Markup from telegraf for inline keyboards
-const { Markup } = require("telegraf");
+// Start polling system
+function startPolling(){
+    try{
+        console.log("[Init] Starting payment polling...");
+        paymentPolling.startPolling(2); // Check every 2 minutes
+        console.log("[Init] ✅ Polling started (every 2 min)");
+    } catch(error){
+        console.error("[Init] ⚠️ Polling error:", error.message);
+    }
+}
 
 
-// Jalankan WhatsApp
-initWhatsApp();
-
-
-// stop aman
-process.once("SIGINT", () => {
+// Main startup
+async function main(){
+    console.log("\n[Init] 🚀 Starting all services...\n");
     
-    console.log("\n🛑 Shutting down gracefully...");
-    bot.stop("SIGINT");
+    // Start Telegram first (simpler, no auth needed)
+    const tg = initTelegram();
     
+    // Start WhatsApp (requires pairing/QR scan)
+    const wa = await initWhatsApp();
+    
+    // Start payment polling
+    startPolling();
+    
+    console.log("\n" + "=".repeat(45));
+    console.log("✅ All systems initialized!");
+    console.log("=".repeat(45));
+    console.log("\n📱 WhatsApp: Scanning QR or waiting for pair...");
+    console.log("🤖 Telegram: Bot is running");
+    console.log("💰 Payment Polling: Active (every 2 min)");
+    console.log("\nPress Ctrl+C to stop\n");
+}
+
+
+// Handle graceful shutdown
+process.on("SIGINT", () => {
+    console.log("\n[Shutdown] Shutting down gracefully...");
+    paymentPolling.stopPolling();
+    process.exit(0);
 });
 
-process.once("SIGTERM", () => {
+process.on("SIGTERM", () => {
+    console.log("\n[Shutdown] Received SIGTERM");
+    paymentPolling.stopPolling();
+    process.exit(0);
+});
 
-    console.log("\n🛑 Shutting down gracefully...");
-    bot.stop("SIGTERM");
 
+// Handle uncaught errors
+process.on("uncaughtException", (error) => {
+    console.error("[Error] Uncaught exception:", error);
+});
+
+process.on("unhandledRejection", (reason, promise) => {
+    console.error("[Error] Unhandled rejection:", reason);
+});
+
+
+// Start the application
+main().catch(error => {
+    console.error("[Fatal] Startup failed:", error);
+    process.exit(1);
 });

@@ -16,7 +16,17 @@ function loadDB(){
                 max_slot_per_session: 12,
                 prefix_kode: "FTSG",
                 sesi_pagi: { start: "08:00", end: "15:00", interval_minutes: 30 },
-                sesi_malam: { start: "20:00", end: "24:00", interval_minutes: 30 }
+                sesi_malam: { start: "20:00", end: "24:00", interval_minutes: 30 },
+                pembayaran: {
+                    nominal: 3000,
+                    qris_filename: "qris.jpg",
+                    pesan: "Silakan lakukan pembayaran untuk konfirmasi pendaftaran.",
+                    opsi: [
+                        { nama: "QRIS", nominal: 3100, tipe: "qris" },
+                        { nama: "DANA", nominal: 3000, nomor: "081234567890" },
+                        { nama: "SeaBank", nominal: 3000, nomor: "081234567891" }
+                    ]
+                }
             },
             peserta: [],
             sessions: {},
@@ -59,7 +69,6 @@ function checkDailyReset(){
 
 // Generate session list based on current time
 // Shows pagi sessions (06:00-17:59) or malam sessions (18:00-05:59)
-// Does NOT show "Sesi Pagi" or "Sesi Malam" labels
 function generateSessions(){
     const db = loadDB();
     const config = db.config;
@@ -175,6 +184,7 @@ function isAlreadyRegistered(phone){
     return db.peserta.some(p => p.phone === phone && p.date === today);
 }
 
+
 // Get registration count for specific phone today
 function getRegistrationCount(phone){
     const db = loadDB();
@@ -182,6 +192,7 @@ function getRegistrationCount(phone){
     
     return db.peserta.filter(p => p.phone === phone && p.date === today).length;
 }
+
 
 // Get remaining registrations (max 10 per day per phone)
 function getRemainingRegistrations(phone){

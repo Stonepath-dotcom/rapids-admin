@@ -1,76 +1,100 @@
-const { exec } = require("child_process");
-const path = require("path");
-const fs = require("fs");
+const XLSX = require("xlsx");
 
 
-// Generate Excel file and return filepath
-function generateExcelFile(){
-    return new Promise((resolve, reject) => {
-        const scriptPath = path.join(__dirname, "generate_excel.py");
-        
-        exec("python3 " + scriptPath, { cwd: path.join(__dirname, "..") }, (error, stdout, stderr) => {
-            if(error){
-                console.error("[Excel] Error generating:", error.message);
-                return reject(error);
-            }
-            
-            // Parse output to get file path
-            const match = stdout.match(/Excel generated: (.+)/);
-            if(match && match[1]){
-                const filePath = match[1].trim();
-                console.log("[Excel] Generated:", filePath);
-                resolve(filePath);
-            } else {
-                reject(new Error("Failed to parse Excel output"));
-            }
-        });
-    });
-}
-
-
-// Send Excel file to Telegram
-async function sendExcelToTelegram(bot, chatId, filePath){
+// Generate Excel file from participant data
+function generateExcel(data){
     try{
-        if(!fs.existsSync(filePath)){
-            throw new Error("Excel file not found: " + filePath);
-        }
+        // Prepare data for Excel
+        const excelData = data.map((p, i) => ({
+            "No": i + 1,
+            "Kode": p.id,
+            "Team": p.team,
+            "Kapten": p.kapten,
+            "Phone": p.phone,
+            "Sesi": p.session,
+            "Jam": p.jam,
+            "Status": p.status,
+            "Tanggal": p.date,
+            "Daftar Pukul": new Date(p.registered_at).toLocaleString("id-ID")
+        }));
         
-        // Get today's date for caption
-        const today = new Date().toLocaleDateString("id-ID", {
-            day: "numeric",
-            month: "long",
-            year: "numeric"
-        });
+        // Create workbook
+        const ws = XLSX.utils.json_to_sheet(excelData);
+        const wb = XLSX.utils.book_new();
+        XLSX.utils.book_append_sheet(wb, ws, "Peserta");
         
-        await bot.telegram.sendDocument(chatId, filePath, {
-            caption: "📊 *Data Peserta Turnamen*\n\nTanggal: *" + today + "*\n\nFile Excel berisi data peserta yang sudah mendaftar.",
-            parse_mode: "Markdown"
-        });
+        // Set column widths
+        ws["!cols"] = [
+            { wch: 5 },   // No
+            { wch: 12 },  // Kode
+            { wch: 20 },  // Team
+            { wch: 15 },  // Kapten
+            { wch: 15 },  // Phone
+            { wch: 10 },  // Sesi
+            { wch: 8 },   // Jam
+            { wch: 15 },  // Status
+            { wch: 12 },  // Tanggal
+            { wch: 20 }   // Daftar Pukul
+        ];
         
-        console.log("[Excel] Sent to Telegram successfully");
-        return true;
+        // Generate buffer
+        const buffer = XLSX.write(wb, { type: "buffer", bookType: "xlsx" });
+        
+        return {
+            success: true,
+            data: buffer,
+            filename: `data_peserta_${new Date().toISOString().split("T")[0]}.xlsx`
+        };
+        
     } catch(error){
-        console.error("[Excel] Error sending to Telegram:", error.message);
-        return false;
+        console.error("[Excel] Error generating:", error.message);
+        return { success: false, message: error.message };
     }
 }
 
 
-// Main function: Generate and send Excel
+// Generate and send Excel to Telegram
 async function generateAndSendExcel(bot, chatId){
     try{
-        const filePath = await generateExcelFile();
-        const sent = await sendExcelToTelegram(bot, chatId, filePath);
-        return { success: sent, filePath };
+        const db = require("../database/db");
+        const data = db.getAllPeserta();
+        
+        if(data.all.length === 0){
+            await bot.telegram.sendMessage(chatId, "📭 Belum ada data peserta");
+            return { success: true, message: "No data" };
+        }
+        
+        const result = generateExcel(data.all);
+        
+        if(!result.success){
+            throw new Error(result.message);
+        }
+        
+        // Send file to Telegram
+        await bot.telegram.sendDocument(chatId, {
+            source: result.data,
+            filename: result.filename
+        }, {
+            caption: `📊 *Data Peserta Turnamen*\n\nTotal: ${data.all.length} peserta\nTanggal: ${new Date().toLocaleDateString("id-ID")}`,
+            parse_mode: "Markdown"
+        });
+        
+        console.log(`[Excel] ✓ Sent to Telegram (${data.all.length} rows)`);
+        return { success: true };
+        
     } catch(error){
-        console.error("[Excel] Error in generateAndSendExcel:", error);
-        return { success: false, error: error.message };
+        console.error("[Excel] Error sending:", error.message);
+        
+        try{
+            await bot.telegram.sendMessage(chatId, `❌ Gagal generate Excel: ${error.message}`);
+        } catch(e){}
+        
+        return { success: false, message: error.message };
     }
 }
 
 
 module.exports = {
-    generateExcelFile,
-    sendExcelToTelegram,
+    generateExcel,
     generateAndSendExcel
 };
