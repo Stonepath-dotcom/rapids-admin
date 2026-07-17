@@ -1,6 +1,7 @@
 const { Telegraf } = require("telegraf");
 const menu = require("./menu");
 const callback = require("./callback");
+const waConnect = require("../whatsapp/connect");
 
 let bot = null;
 
@@ -32,6 +33,38 @@ function registerHandlers(){
     // Main menu command
     bot.command("menu", (ctx) => {
         ctx.reply(menu.mainMenu(), { parse_mode: "Markdown" });
+    });
+    
+    // Pair WhatsApp command - ADMIN ONLY
+    bot.command("pair", (ctx) => {
+        const ownerId = process.env.OWNER_ID;
+        
+        // Check if owner
+        if(ownerId && ctx.from.id.toString() !== ownerId){
+            return ctx.reply("❌ Command ini hanya untuk Admin!");
+        }
+        
+        const phoneNumber = process.env.PHONE_NUMBER;
+        
+        if(!phoneNumber){
+            ctx.reply(
+                "⚠️ *PHONE_NUMBER belum di-set!*\n\n" +
+                "Tambahkan di file .env:\n" +
+                "`PHONE_NUMBER=628123456789`\n\n" +
+                "Format: kode negara + nomor (tanpa + atau spasi)",
+                { parse_mode: "Markdown" }
+            );
+            return;
+        }
+        
+        ctx.reply(
+            "🔄 *Mengirim pairing code...*\n\n" +
+            "Tunggu sebentar, kode akan dikirim ke chat ini!",
+            { parse_mode: "Markdown" }
+        ).then(() => {
+            // Request new pairing code
+            waConnect.requestNewPairingCode(phoneNumber);
+        });
     });
     
     // Handle callback queries (button clicks)

@@ -31,8 +31,18 @@ if(!process.env.OWNER_ID){
 // Initialize WhatsApp
 async function initWhatsApp(){
     try{
-        console.log("[Init] Starting WhatsApp connection...");
-        const sock = await waConnect.createConnection();
+        // Get phone number for pairing code mode
+        const phoneNumber = process.env.PHONE_NUMBER || null;
+        
+        if(phoneNumber){
+            console.log(`[Init] Starting WhatsApp (Pairing Code Mode)...`);
+            console.log(`[Init] 📱 Phone: ${phoneNumber}`);
+        } else {
+            console.log(`[Init] Starting WhatsApp (QR Mode - no PHONE_NUMBER in .env)`);
+            console.log(`[Init] 💡 Add "PHONE_NUMBER=628xxx" to .env for pairing code via Telegram!`);
+        }
+        
+        const sock = await waConnect.createConnection({ phoneNumber });
         
         // Set up message handler
         await waMessage.handleMessage(sock);
@@ -129,7 +139,14 @@ async function main(){
     console.log("\n" + "=".repeat(45));
     console.log("✅ All systems initialized!");
     console.log("=".repeat(45));
-    console.log("\n📱 WhatsApp: Scanning QR or waiting for pair...");
+    
+    if(process.env.PHONE_NUMBER){
+        console.log("\n📱 WhatsApp: Pairing Code Mode - check Telegram for code!");
+        console.log(`📱 Phone: ${process.env.PHONE_NUMBER}`);
+    } else {
+        console.log("\n📱 WhatsApp: QR Mode (add PHONE_NUMBER to .env for pairing)");
+    }
+    
     console.log("🤖 Telegram: Bot is running");
     console.log("💰 Payment Polling: Active (every 2 min)");
     console.log("\nPress Ctrl+C to stop\n");
