@@ -236,7 +236,7 @@ async function confirmDeleteAll(ctx){
     const keyboard = [
         [
             { text: "✅ YA, HAPUS SEMUA!", callback_data: "confirm_delete_all" },
-            { text: ❌ BATAL, callback_data: "admin" }
+            { text: "❌ BATAL", callback_data: "admin" }
         ]
     ];
     
