@@ -237,63 +237,71 @@ Silakan lakukan pembayaran untuk konfirmasi pendaftaran.
 
 Menunggu pembayaran Anda... 🙏`);
 
-            // Generate QRIS dynamically via cashi.id
+            // Generate QRIS dynamically via cashi.id or fallback to static
             try {
                 const orderId = `${peserta.id}-${Date.now()}`;
                 const qrisNominal = 3100; // QRIS nominal
                 
                 console.log(`[WA] Generating QRIS for ${peserta.id} via cashi.id...`);
                 
-                const qrisResult = await cashiHelper.createQRISPayment(qrisNominal, orderId);
+                let qrisSent = false;
                 
-                if(qrisResult.success){
-                    const qrisData = qrisResult.data;
+                // Try cashi.id dynamic QRIS first
+                try{
+                    const qrisResult = await cashiHelper.createQRISPayment(qrisNominal, orderId);
                     
-                    console.log(`[WA] QRIS generated! Order: ${qrisData.orderId}`);
-                    
-                    // Store order_id in participant data for webhook matching
-                    db.updateCashiOrder(peserta.id, qrisData.orderId);
-                    
-                    // Send QRIS image (base64) to WhatsApp
-                    if(qrisData.qrisUrl && qrisData.qrisUrl.startsWith("data:image")){
-                        const base64Data = qrisData.qrisUrl.split(",")[1] || qrisData.qrisUrl;
+                    if(qrisResult.success && qrisResult.data){
+                        const qrisData = qrisResult.data;
                         
-                        await sock.sendMessage(from, {
-                            image: { buffer: Buffer.from(base64Data, "base64") },
-                            caption: `📱 *Scan QRIS di atas*
-
-💳 Nominal: *Rp ${qrisNominal.toLocaleString("id-ID")}* ⚡
-🆔 Order ID: ${qrisData.orderId}
-⏰ Expired: ${qrisData.expiresAt || "24 jam"}
-
-✅ Pembayaran akan dikonfirmasi OTOMATIS setelah Anda transfer!
-
-Atau pakai opsi manual:
-💼 DANA: *081234567890* (Rp 3.000)
-🏦 SeaBank: *081234567891* (Rp 3.000)`
-                        });
+                        console.log(`[WA] Cashi.id response received`);
+                        console.log(`[WA] Order ID: ${qrisData.orderId}`);
+                        console.log(`[WA] Has QRIS URL:`, !!qrisData.qrisUrl);
                         
-                        console.log(`[WA] Dynamic QRIS sent to ${phone}`);
-                    } else {
-                        await sendMessage(sock, from,
-`💳 *QRIS Payment*
-
-🆔 Order ID: ${qrisData.orderId}
-💳 Nominal: *Rp ${qrisNominal.toLocaleString("id-ID")}*
-⏰ Expired: ${qrisData.expiresAt || "24 jam"}
-
-QRIS sedang diproses...
-Jika tidak menerima gambar QRIS dalam 1 menit, hubungi admin.
-
-Atau transfer manual:
-💼 DANA: *081234567890*
-🏦 SeaBank: *081234567891*`
-                        );
+                        // Store order_id in participant data for polling
+                        db.updateCashiOrder(peserta.id, qrisData.orderId);
+                        
+                        // Try to send QRIS image based on type
+                        if(qrisData.qrisUrl){
+                            
+                            // Case 1: Base64 data image
+                            if(qrisData.qrisUrl.startsWith("data:image")){
+                                const base64Data = qrisData.qrisUrl.split(",")[1] || qrisData.qrisUrl;
+                                
+                                await sock.sendMessage(from, {
+                                    image: { buffer: Buffer.from(base64Data, "base64") },
+                                    caption: getQRISCaption(qrisNominal, qrisData)
+                                });
+                                
+                                qrisSent = true;
+                                console.log(`[WA] ✅ Dynamic QRIS (base64) sent to ${phone}`);
+                            }
+                            // Case 2: HTTP(S) URL
+                            else if(qrisData.qrisUrl.startsWith("http")){
+                                await sock.sendMessage(from, {
+                                    image: { url: qrisData.qrisUrl },
+                                    caption: getQRISCaption(qrisNominal, qrisData)
+                                });
+                                
+                                qrisSent = true;
+                                console.log(`[WA] ✅ Dynamic QRIS (URL) sent to ${phone}`);
+                            }
+                            // Case 3: Raw QRIS string (need to show as text or use fallback)
+                            else{
+                                console.log(`[WA] Raw QRIS string received, using fallback image`);
+                                // Will fall through to static QRIS below
+                            }
+                        }
+                    } else{
+                        console.warn(`[WA] Cashi.id returned no data:`, qrisResult.message);
                     }
-                } else {
-                    console.error(`[WA] Failed to generate QRIS: ${qrisResult.message}`);
+                } catch(cashiError){
+                    console.error(`[WA] Cashi.id error:`, cashiError.message);
+                }
+                
+                // Fallback: Send static QRIS if dynamic failed
+                if(!qrisSent){
+                    console.log(`[WA] Sending static/fallback QRIS...`);
                     
-                    // Fallback to static QRIS or manual payment
                     const fs = require("fs");
                     const path = require("path");
                     const qrisPath = path.join(__dirname, "../download/qris.jpg");
@@ -301,32 +309,53 @@ Atau transfer manual:
                     if(fs.existsSync(qrisPath)){
                         await sock.sendMessage(from, {
                             image: { url: qrisPath },
-                            caption: `📱 Scan QRIS di atas\n\nNominal: *Rp 3.100*\n\nSetelah transfer, kirim bukti transfer ya! 📸`
-                        });
-                    } else {
-                        await sendMessage(sock, from,
-`💳 *Pembayaran Manual*
+                            caption: `📱 *Scan QRIS di atas*
 
-Maaf, QRIS dinamis sedang gangguan.
+💳 Nominal: *Rp 3.100* ⚡
+🆔 Kode Peserta: ${peserta.id}
 
-Silakan transfer manual:
+✅ Setelah transfer, pembayaran akan **DIVERIFIKASI ADMIN**
+
+Atau transfer manual:
 💼 DANA: *081234567890* (Rp 3.000)
 🏦 SeaBank: *081234567891* (Rp 3.000)
 
-Kirim bukti transfer ke admin!`
+Kirim bukti transfer ke admin ya! 📸`
+                        });
+                        
+                        qrisSent = true;
+                        console.log(`[WA] ✅ Static QRIS sent to ${phone}`);
+                    } else{
+                        // Last resort: send payment info without image
+                        await sendMessage(sock, from,
+`💳 *INFORMASI PEMBAYARAN*
+
+Maaf, gambar QRIS tidak tersedia saat ini.
+
+💰 *Nominal Transfer:*
+• **QRIS:** Rp 3.100
+• **DANA:** Rp 3.000 (ke 081234567890)
+• **SeaBank:** Rp 3.000 (ke 081234567891)
+
+📸 Setelah transfer, kirim bukti transfer di sini!
+
+Hubungi admin jika butuh bantuan.`
                         );
+                        
+                        console.log(`[WA] ⚠️ Sent payment info without QRIS image`);
                     }
                 }
+                
             } catch(qrisError){
-                console.error("[WA] Error generating/sending QRIS:", qrisError.message);
+                console.error("[WA] Error in QRIS generation:", qrisError.message);
                 
                 await sendMessage(sock, from,
 `❌ Terjadi kesalahan saat generate QRIS.
 
-Silakan coba lagi atau hubungi admin untuk pembayaran manual.
+Silakan coba lagi atau hubungi admin.
 
-💼 DANA: *081234567890*
-🏦 SeaBank: *081234567891*`
+💼 DANA: *081234567890* (Rp 3.000)
+🏦 SeaBank: *081234567891* (Rp 3.000)`
                 );
             }
 
@@ -553,6 +582,22 @@ Silakan coba lagi atau hubungi admin.`
     });
 
 
+}
+
+
+// Generate QRIS caption for dynamic QRIS
+function getQRISCaption(nominal, qrisData){
+    return `📱 *Scan QRIS di atas*
+
+💳 Nominal: *Rp ${nominal.toLocaleString("id-ID")}* ⚡
+🆔 Order ID: ${qrisData.orderId || "N/A"}
+⏰ Expired: ${qrisData.expiresAt || "24 jam"}
+
+✅ Pembayaran akan dikonfirmasi OTOMATIS setelah Anda transfer!
+
+Atau pakai opsi manual:
+💼 DANA: *081234567890* (Rp 3.000)
+🏦 SeaBank: *081234567891* (Rp 3.000)`;
 }
 
 
