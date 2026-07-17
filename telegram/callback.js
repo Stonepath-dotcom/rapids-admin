@@ -429,7 +429,7 @@ async function markAsPaid(ctx, id){
             notifyWA(result.data.phone,
 `💰 *PEMBAYARAN KONFIRMASI!*
 
-Terima kasih! Pembayaran Anda dengan kode *${id* telah **KONFIRMASI LUNAS** ✅
+Terima kasih! Pembayaran Anda dengan kode *${id}* telah **KONFIRMASI LUNAS** ✅
 
 Selamat bertanding di turnamen FTSG! 🎮`
             );
@@ -457,7 +457,7 @@ async function rejectPayment(ctx, id){
             notifyWA(result.data.phone,
 `❌ *Pendaftaran Ditolak*
 
-Maaf, pendaftaran Anda dengan kode *${id* telah **DITOLAK** admin.
+Maaf, pendaftaran Anda dengan kode *${id}* telah **DITOLAK** admin.
 
 Alasan: Tidak memenuhi syarat / bukti tidak valid
 
