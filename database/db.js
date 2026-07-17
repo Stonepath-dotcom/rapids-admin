@@ -372,6 +372,79 @@ function getSessionStats(){
 }
 
 
+// Delete single participant by ID
+function deletePeserta(id){
+    const db = loadDB();
+    
+    // Find participant index
+    const index = db.peserta.findIndex(p => p.id === id);
+    if(index === -1){
+        return { success: false, message: "Peserta tidak ditemukan" };
+    }
+    
+    // Remove from main array
+    const deleted = db.peserta.splice(index, 1)[0];
+    
+    // Also remove from sessions
+    const today = getTodayString();
+    if(db.sessions[today]){
+        const sessionIndex = db.sessions[today].findIndex(p => p.id === id);
+        if(sessionIndex !== -1){
+            db.sessions[today].splice(sessionIndex, 1);
+        }
+    }
+    
+    saveDB(db);
+    return { success: true, data: deleted };
+}
+
+
+// Delete ALL participants
+function deleteAllPeserta(){
+    const db = loadDB();
+    const today = getTodayString();
+    
+    // Clear all data
+    db.peserta = [];
+    db.sessions[today] = [];
+    
+    saveDB(db);
+    return { success: true, message: "Semua peserta berhasil dihapus" };
+}
+
+
+// Reset participant status back to Pending (for re-registration)
+function resetPesertaStatus(id){
+    const db = loadDB();
+    
+    // Find participant
+    const index = db.peserta.findIndex(p => p.id === id);
+    if(index === -1){
+        return { success: false, message: "Peserta tidak ditemukan" };
+    }
+    
+    // Reset status to Pending
+    db.peserta[index].status = "Pending";
+    db.peserta[index].payment_proof = null;
+    db.peserta[index].cashi_order_id = null;
+    db.peserta[index].updated_at = new Date().toISOString();
+    
+    // Also update in sessions
+    const today = getTodayString();
+    if(db.sessions[today]){
+        const sessionIndex = db.sessions[today].findIndex(p => p.id === id);
+        if(sessionIndex !== -1){
+            db.sessions[today][sessionIndex].status = "Pending";
+            db.sessions[today][sessionIndex].payment_proof = null;
+            db.sessions[today][sessionIndex].cashi_order_id = null;
+        }
+    }
+    
+    saveDB(db);
+    return { success: true, data: db.peserta[index] };
+}
+
+
 module.exports = {
     loadDB,
     saveDB,
